@@ -1,89 +1,101 @@
+# gui/gui.py
 import pygame
-import sys
 import os
-from engine.board import Board
-from engine.search import minimax
 
-# Constants
-WIDTH, HEIGHT = 640, 640
-ROWS, COLS = 8, 8
-SQUARE_SIZE = WIDTH // COLS
-WHITE = (240, 217, 181)
-BROWN = (181, 136, 99)
+class GUI:
+    """
+    Manages all visual components and drawing for the chess game.
+    """
+    def __init__(self):
+        self.square_size = 640 // 8
+        self.colors = [(240, 217, 181), (181, 136, 99)]
+        self.images = self._load_images()
+        self.font = pygame.font.SysFont("consolas", 32, bold=True)
 
-# Piece images (you must have these!)
-PIECE_IMAGES = {}
+    def _load_images(self):
+        """
+        Loads piece images from the assets directory.
+        The dictionary keys created here ('P', 'p', 'N', 'n', etc.) are the
+        exact characters the engine uses, which is crucial for correct drawing.
+        """
+        images = {}
+        # These are the base piece types, used to find the asset files.
+        asset_pieces = ['P', 'N', 'B', 'R', 'Q', 'K']
 
-def load_images():
-    pieces = ['P', 'R', 'N', 'B', 'Q', 'K', 'p', 'r', 'n', 'b', 'q', 'k']
-    for piece in pieces:
-        PIECE_IMAGES[piece] = pygame.transform.scale(
-            pygame.image.load(f"assets/{piece}.png"), (SQUARE_SIZE, SQUARE_SIZE)
-        )
+        for piece in asset_pieces:
+            # The key for white pieces is the uppercase character (e.g., 'P').
+            white_key = piece.upper()
+            # The key for black pieces is the lowercase character (e.g., 'p').
+            black_key = piece.lower()
 
-def load_piece_images():
-    pieces = ['P', 'R', 'N', 'B', 'Q', 'K']
-    images = {}
+            # The path always uses the uppercase character, per your file names.
+            white_path = os.path.join("assets", f"w{piece.upper()}.png")
+            black_path = os.path.join("assets", f"b{piece.upper()}.png")
 
-    for color in ['w', 'b']:
-        for piece in pieces:
-            name = f"{color}{piece}"
-            image_path = os.path.join("assets", f"{name}.png")
-            images[name] = pygame.image.load(image_path)
+            images[white_key] = pygame.transform.scale(
+                pygame.image.load(white_path).convert_alpha(), 
+                (self.square_size, self.square_size)
+            )
+            images[black_key] = pygame.transform.scale(
+                pygame.image.load(black_path).convert_alpha(), 
+                (self.square_size, self.square_size)
+            )
+            
+        print("Piece images loaded successfully.")
+        return images
 
-    return images
+    def draw_gamestate(self, screen, board, selected_sq, legal_moves_for_selected):
+        """Draws the entire game state by calling helper methods."""
+        self._draw_board(screen)
+        self._draw_highlights(screen, selected_sq, legal_moves_for_selected)
+        self._draw_pieces(screen, board)
+        self._draw_game_over_text(screen, board)
 
-def draw_board(win, board):
-    for row in range(ROWS):
-        for col in range(COLS):
-            color = WHITE if (row + col) % 2 == 0 else BROWN
-            pygame.draw.rect(win, color, (col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
+    def _draw_board(self, screen):
+        """Draws the checkerboard squares."""
+        for r in range(8):
+            for c in range(8):
+                color = self.colors[(r + c) % 2]
+                pygame.draw.rect(screen, color, (c * self.square_size, r * self.square_size, self.square_size, self.square_size))
 
-            piece = board.squares[row][col]
+    def _draw_pieces(self, screen, board):
+        """
+        Draws the pieces on the board. This function now correctly uses
+        the piece character directly as the key to find the image.
+        """
+        for sq in range(64):
+            piece = board.get_piece(sq) # Gets the character, e.g., 'P', 'b', 'k'
             if piece != '.':
-                win.blit(PIECE_IMAGES[piece], (col * SQUARE_SIZE, row * SQUARE_SIZE))
+                # The 'piece' character is the direct key for the self.images dictionary.
+                rank, file = divmod(sq, 8)
+                # The (7 - rank) correctly flips the board vertically for Pygame's coordinate system.
+                screen.blit(self.images[piece], (file * self.square_size, (7 - rank) * self.square_size))
 
-def main():
-    pygame.init()
-    win = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("God Engine Chess")
+    def _draw_highlights(self, screen, selected_sq, legal_moves):
+        """Draws highlights for the selected piece and its legal moves."""
+        if selected_sq is None:
+            return
 
-    board = Board()
-    load_images()
+        rank, file = divmod(selected_sq, 8)
+        pygame.draw.rect(screen, (255, 255, 0), (file * self.square_size, (7 - rank) * self.square_size, self.square_size, self.square_size), 4)
 
-    running = True
-    selected = None
-
-    while running:
-        draw_board(win, board)
-        pygame.display.flip()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                x, y = pygame.mouse.get_pos()
-                row = y // SQUARE_SIZE
-                col = x // SQUARE_SIZE
-                index = row * 8 + col
-
-                if selected is None:
-                    selected = index
-                else:
-                    from engine.move import Move
-                    piece = board.get_piece(selected)
-                    move = Move(selected, index, piece)
-                    board.make_move(move)
-                    selected = None
-
-                    # AI Move
-                    _, best_move = minimax(board, 2, float('-inf'), float('inf'), False)
-                    if best_move:
-                        board.make_move(best_move)
-
-    pygame.quit()
-    sys.exit()
-
-if __name__ == "__main__":
-    main()
+        s = pygame.Surface((self.square_size, self.square_size), pygame.SRCALPHA)
+        s.fill((0, 150, 0, 90))
+        for to_sq in legal_moves:
+            rank, file = divmod(to_sq, 8)
+            screen.blit(s, (file * self.square_size, (7 - rank) * self.square_size))
+            
+    def _draw_game_over_text(self, screen, board):
+        """Checks for and displays checkmate or stalemate messages."""
+        if not board.generate_legal_moves(board.side_to_move):
+            in_check = board.is_in_check(board.side_to_move)
+            message = "Checkmate!" if in_check else "Stalemate!"
+            
+            text = self.font.render(message, True, (200, 20, 20))
+            text_rect = text.get_rect(center=(screen.get_width() / 2, screen.get_height() / 2))
+            
+            bg_rect = text_rect.inflate(20, 20)
+            pygame.draw.rect(screen, (240, 217, 181), bg_rect)
+            pygame.draw.rect(screen, (0, 0, 0), bg_rect, 2)
+            
+            screen.blit(text, text_rect)

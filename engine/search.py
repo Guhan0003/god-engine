@@ -1,68 +1,99 @@
+# engine/search.py
 from engine.eval import evaluate
-from engine.move import Move
+from dataclasses import dataclass
 
-def minimax(board, depth, alpha, beta, maximizing_player):
-    # Performs minimax search with alpha-beta pruning
+# Constants for TT entry flags
+TT_EXACT = 0
+TT_LOWERBOUND = 1
+TT_UPPERBOUND = 2
 
+@dataclass
+class TT_Entry:
+    """Stores data for a single entry in the Transposition Table."""
+    depth: int
+    score: int
+    flag: int
+    best_move: object = None # Can be a Move object
+
+class TranspositionTable:
+    """A simple dictionary-based transposition table."""
+    def __init__(self):
+        self.table = {}
+
+    def get(self, zobrist_hash: int):
+        return self.table.get(zobrist_hash)
+
+    def put(self, zobrist_hash: int, depth: int, score: int, flag: int, best_move=None):
+        self.table[zobrist_hash] = TT_Entry(depth, score, flag, best_move)
+
+# --- AI Search ---
+
+# Global TT instance
+tt = TranspositionTable()
+
+def find_best_move(board, depth: int):
+    """Public entry point to find the best move for the current position."""
+    is_white_turn = board.side_to_move == 'w'
+    negamax(board, depth, -float('inf'), float('inf'), is_white_turn)
+    
+    # Retrieve the best move from the TT for the root position
+    root_entry = tt.get(board.zobrist_hash)
+    if root_entry:
+        return root_entry.score, root_entry.best_move
+    return 0, None # Should not happen if search is run
+
+def negamax(board, depth: int, alpha: float, beta: float, is_white_turn: bool):
+    """
+    A negamax search algorithm with alpha-beta pruning and transposition table integration.
+    """
+    alpha_orig = alpha
+    
+    # 1. Transposition Table Lookup
+    tt_entry = tt.get(board.zobrist_hash)
+    if tt_entry and tt_entry.depth >= depth:
+        if tt_entry.flag == TT_EXACT:
+            return tt_entry.score
+        elif tt_entry.flag == TT_LOWERBOUND:
+            alpha = max(alpha, tt_entry.score)
+        elif tt_entry.flag == TT_UPPERBOUND:
+            beta = min(beta, tt_entry.score)
+        
+        if alpha >= beta:
+            return tt_entry.score
+
+    # 2. Base Case
     if depth == 0:
-        return evaluate(board), None  # Return evaluation at leaf node
+        score = evaluate(board)
+        return score if is_white_turn else -score
 
+    # 3. Recursive Search
     best_move = None
+    max_eval = -float('inf')
+    moves = board.generate_legal_moves(board.side_to_move)
+    
+    if not moves: # Checkmate or stalemate
+        return -20000 if board.is_in_check(board.side_to_move) else 0
 
-    def generate_all_moves(board, side):
-        # Generates all legal Move objects for given side (w/b)
-        legal_moves = board.generate_legal_moves(side)
-        move_list = []
+    for move in moves:
+        board.make_move(move)
+        eval = -negamax(board, depth - 1, -beta, -alpha, not is_white_turn)
+        board.undo_move()
+        
+        if eval > max_eval:
+            max_eval = eval
+            best_move = move
+        
+        alpha = max(alpha, eval)
+        if alpha >= beta:
+            break # Pruning
 
-        for move in legal_moves:
-            from_sq = move.from_sq
-            to_sq = move.to_sq
-            promotion = move.promotion
-            piece = board.get_piece(from_sq)
-            captured = board.get_piece(to_sq)
-
-            # Ignore if same-side piece is on target square
-            if captured == '.' or (side == 'w' and captured.isupper()) or (side == 'b' and captured.islower()):
-                captured = None
-
-            move_list.append(Move(from_sq, to_sq, piece, captured=captured, promotion=promotion))
-
-        return move_list
-
-    if maximizing_player:
-        max_eval = float('-inf')  # Best score for white
-        legal_moves = generate_all_moves(board, 'w')
-
-        for move in legal_moves:
-            board.make_move(move)
-            eval, _ = minimax(board, depth - 1, alpha, beta, False)  # Recurse as black
-            board.undo_move()
-
-            if eval > max_eval:
-                max_eval = eval
-                best_move = move
-
-            alpha = max(alpha, eval)  # Update alpha for pruning
-            if beta <= alpha:
-                break  # Beta cutoff
-
-        return max_eval, best_move
-
-    else:
-        min_eval = float('inf')  # Best score for black
-        legal_moves = generate_all_moves(board, 'b')
-
-        for move in legal_moves:
-            board.make_move(move)
-            eval, _ = minimax(board, depth - 1, alpha, beta, True)  # Recurse as white
-            board.undo_move()
-
-            if eval < min_eval:
-                min_eval = eval
-                best_move = move
-
-            beta = min(beta, eval)  # Update beta for pruning
-            if beta <= alpha:
-                break  # Alpha cutoff
-
-        return min_eval, best_move
+    # 4. Transposition Table Store
+    flag = TT_EXACT
+    if max_eval <= alpha_orig:
+        flag = TT_UPPERBOUND
+    elif max_eval >= beta:
+        flag = TT_LOWERBOUND
+        
+    tt.put(board.zobrist_hash, depth, max_eval, flag, best_move)
+    
+    return max_eval
