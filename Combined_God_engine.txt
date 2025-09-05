@@ -1,0 +1,855 @@
+
+===== combine.py =====
+import os
+
+# Set your base project directory
+base_directory = r'G:\God_engine'  # Change this to your project root
+
+# Set output file
+output_file_path = 'Combined_God_engine.txt'
+
+# File types you want to include (extend as needed)
+include_extensions = [
+    '.py', '.html', '.css', '.js', '.ts', '.json',
+    '.env', '.txt', '.md', '.yml', '.yaml'
+]
+
+# Optional folders to exclude (e.g., static/media/migrations/venv)
+exclude_dirs = {'__pycache__', 'static', 'media', 'migrations', 'venv', '.git', 'node_modules'}
+
+with open(output_file_path, 'w', encoding='utf-8') as output_file:
+    for root, dirs, files in os.walk(base_directory):
+        # Exclude unwanted folders
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            if any(filename.endswith(ext) for ext in include_extensions):
+                relative_path = os.path.relpath(filepath, base_directory)
+                output_file.write(f"\n===== {relative_path} =====\n")
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        output_file.write(f.read())
+                except Exception as e:
+                    output_file.write(f"[Error reading file: {e}]\n")
+
+===== Combined_God_engine.txt =====
+
+===== main.py =====
+# main.py
+import pygame
+import sys
+from engine.board import Board
+from engine.search import find_best_move
+from gui.gui import GUI
+
+class Game:
+    """
+    Manages the main game loop, game state, and user input.
+    """
+    def __init__(self, screen, player_color='w', ai_depth=3):
+        self.screen = screen
+        self.board = Board()
+        self.gui = GUI()
+        self.player_color = player_color
+        self.ai_depth = ai_depth
+        
+        self.selected_sq = None
+        self.legal_moves_for_selected = []
+
+    def run(self):
+        """The main game loop with the correct update/draw order."""
+        clock = pygame.time.Clock()
+        running = True
+        while running:
+            # --- 1. Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if self.board.side_to_move == self.player_color and not self._is_game_over():
+                        self._handle_click(event.pos)
+
+            # --- 2. Game Logic (AI Move) ---
+            if self.board.side_to_move != self.player_color and not self._is_game_over():
+                pygame.time.wait(100) # Small delay to make AI move visible
+                self._make_ai_move()
+
+            # --- 3. Drawing ---
+            self.gui.draw_gamestate(self.screen, self.board, self.selected_sq, self.legal_moves_for_selected)
+            pygame.display.flip()
+            
+            clock.tick(60)
+        
+        pygame.quit()
+        sys.exit()
+
+    def _handle_click(self, pos):
+        """Handles a mouse click, either selecting a piece or making a move."""
+        clicked_sq = self._pos_to_square(pos)
+        
+        if self.selected_sq is not None and clicked_sq in self.legal_moves_for_selected:
+            move = next((m for m in self.board.generate_legal_moves(self.player_color) 
+                         if m.from_sq == self.selected_sq and m.to_sq == clicked_sq), None)
+            if move:
+                print(f"Player move: {move}") 
+                self.board.make_move(move)
+                self.selected_sq = None
+                self.legal_moves_for_selected = []
+        else:
+            piece = self.board.get_piece(clicked_sq)
+            is_players_piece = piece != '.' and (piece.isupper() if self.player_color == 'w' else piece.islower())
+            
+            if is_players_piece:
+                self.selected_sq = clicked_sq
+                legal_moves = self.board.generate_legal_moves(self.player_color)
+                self.legal_moves_for_selected = [m.to_sq for m in legal_moves if m.from_sq == clicked_sq]
+            else:
+                self.selected_sq = None
+                self.legal_moves_for_selected = []
+
+    def _make_ai_move(self):
+        """Finds and makes the best move for the AI using the search algorithm."""
+        print("AI is thinking...")
+        score, ai_move = find_best_move(self.board, self.ai_depth)
+        
+        if ai_move:
+            print(f"AI move: {ai_move}")
+            print(f"AI plays move. Eval: {score/100.0}")
+            self.board.make_move(ai_move)
+        else:
+            print("AI has no moves. Game over.")
+
+    def _pos_to_square(self, pos):
+        """Converts a Pygame screen position to a board square index (0-63)."""
+        file = pos[0] // self.gui.square_size
+        rank = 7 - (pos[1] // self.gui.square_size)
+        return rank * 8 + file
+
+    def _is_game_over(self):
+        """Checks if the game has ended."""
+        return not self.board.generate_legal_moves(self.board.side_to_move)
+
+if __name__ == "__main__":
+    WIDTH, HEIGHT = 640, 640
+    
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("God Engine")
+    
+    game = Game(screen, player_color='w', ai_depth=3)
+    game.run()
+===== README.md =====
+[Error reading file: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte]
+
+===== requirements.txt =====
+
+===== engine\board.py =====
+# engine/board.py
+from engine.move import Move
+from engine import zobrist
+
+_popcount = getattr(int, 'bit_count', lambda x: bin(x).count('1'))
+
+NOT_A_FILE = 0xFEFEFEFEFEFEFEFE
+NOT_H_FILE = 0x7F7F7F7F7F7F7F7F
+
+class Board:
+    def __init__(self):
+        self.bitboards = {}
+        self.side_to_move = 'w'
+        self.en_passant = None
+        self.move_stack = []
+        self.zobrist_hash = 0
+        self.init_bitboards()
+
+    def init_bitboards(self):
+        self.bitboards = {
+            'P': 0x000000000000FF00, 'N': 0x0000000000000042, 'B': 0x0000000000000024,
+            'R': 0x0000000000000081, 'Q': 0x0000000000000008, 'K': 0x0000000000000010,
+            'p': 0x00FF000000000000, 'n': 0x4200000000000000, 'b': 0x2400000000000000,
+            'r': 0x8100000000000000, 'q': 0x0800000000000000, 'k': 0x1000000000000000,
+        }
+        self.compute_initial_zobrist_hash()
+
+    def get_piece(self, square: int) -> str:
+        for piece, bb in self.bitboards.items():
+            if (bb >> square) & 1:
+                return piece
+        return '.'
+
+    def get_occupied(self) -> int:
+        occ = 0
+        for bb in self.bitboards.values(): occ |= bb
+        return occ
+
+    def get_color_bb(self, color: str) -> int:
+        bb = 0
+        pieces = ('P','N','B','R','Q','K') if color == 'w' else ('p','n','b','r','q','k')
+        for piece in pieces: bb |= self.bitboards[piece]
+        return bb
+
+    def make_move(self, move: Move) -> None:
+        move.prev_en_passant = self.en_passant
+        from_mask, to_mask = 1 << move.from_sq, 1 << move.to_sq
+
+        if move.promotion == 'ep':
+            self.bitboards[move.piece] &= ~from_mask
+            self.bitboards[move.piece] |= to_mask
+            captured_sq = move.to_sq + (8 if move.piece == 'P' else -8)
+            self.bitboards[move.captured] &= ~(1 << captured_sq)
+        else:
+            if move.captured: self.bitboards[move.captured] &= ~to_mask
+            self.bitboards[move.piece] &= ~from_mask
+            if move.promotion: self.bitboards[move.promotion] |= to_mask
+            else: self.bitboards[move.piece] |= to_mask
+
+        self.en_passant = (move.from_sq + move.to_sq) // 2 if move.piece.lower() == 'p' and abs(move.to_sq - move.from_sq) == 16 else None
+        
+        self._update_hash_on_make(move)
+        self.move_stack.append(move)
+        self.side_to_move = 'b' if self.side_to_move == 'w' else 'w'
+        self.zobrist_hash ^= zobrist.BLACK_TO_MOVE_KEY
+
+    def undo_move(self) -> None:
+        move = self.move_stack.pop()
+        
+        self.zobrist_hash ^= zobrist.BLACK_TO_MOVE_KEY
+        self.side_to_move = 'b' if self.side_to_move == 'w' else 'w'
+        self._update_hash_on_undo(move)
+        
+        self.en_passant = move.prev_en_passant
+        from_mask, to_mask = 1 << move.from_sq, 1 << move.to_sq
+
+        if move.promotion == 'ep':
+            self.bitboards[move.piece] &= ~to_mask; self.bitboards[move.piece] |= from_mask
+            captured_sq = move.to_sq + (8 if move.piece == 'P' else -8)
+            self.bitboards[move.captured] |= (1 << captured_sq)
+        else:
+            if move.promotion: self.bitboards[move.promotion] &= ~to_mask
+            else: self.bitboards[move.piece] &= ~to_mask
+            self.bitboards[move.piece] |= from_mask
+            if move.captured: self.bitboards[move.captured] |= to_mask
+
+    def is_in_check(self, color: str) -> bool:
+        king_bb = self.bitboards['K' if color == 'w' else 'k']
+        if not king_bb: return True
+        king_sq = _popcount(king_bb - 1)
+        
+        enemy_moves = self.generate_pseudo_legal_moves('b' if color == 'w' else 'w')
+        return any(move.to_sq == king_sq for move in enemy_moves)
+
+    def generate_legal_moves(self, color: str) -> list[Move]:
+        legal = []
+        for move in self.generate_pseudo_legal_moves(color):
+            self.make_move(move)
+            if not self.is_in_check(color):
+                legal.append(move)
+            self.undo_move()
+        return legal
+
+    def generate_pseudo_legal_moves(self, color: str) -> list[Move]:
+        return (
+            self.generate_pawn_moves(color)   + self.generate_knight_moves(color) +
+            self.generate_bishop_moves(color) + self.generate_rook_moves(color)   +
+            self.generate_queen_moves(color)  + self.generate_king_moves(color)
+        )
+    
+    def _split_bb(self, bb: int):
+        while bb:
+            lsb = bb & -bb; yield lsb; bb &= bb - 1
+
+    def generate_pawn_moves(self, color: str) -> list[Move]:
+        moves = []
+        occupied, promotions = self.get_occupied(), ('Q','R','B','N') if color == 'w' else ('q','r','b','n')
+        if color == 'w':
+            pawns, piece, enemy_bb = self.bitboards['P'], 'P', self.get_color_bb('b')
+            pushes = (pawns << 8) & ~occupied
+            for to_bb in self._split_bb(pushes):
+                to_sq = _popcount(to_bb - 1); from_sq = to_sq - 8
+                if to_sq // 8 == 7:
+                    for promo in promotions: moves.append(Move(from_sq, to_sq, piece, promotion=promo))
+                else: moves.append(Move(from_sq, to_sq, piece))
+            
+            double_pushes = (((pawns & 0xFF00) << 8) & ~occupied) << 8 & ~occupied
+            for to_bb in self._split_bb(double_pushes):
+                to_sq = _popcount(to_bb - 1); moves.append(Move(to_sq - 16, to_sq, piece))
+
+            for cap_bb, shift in [((pawns & NOT_A_FILE) << 7, 7), ((pawns & NOT_H_FILE) << 9, 9)]:
+                targets = cap_bb & enemy_bb
+                for to_bb in self._split_bb(targets):
+                    to_sq = _popcount(to_bb - 1); from_sq, captured = to_sq - shift, self.get_piece(to_sq)
+                    if to_sq // 8 == 7:
+                        for promo in promotions: moves.append(Move(from_sq, to_sq, piece, promotion=promo, captured=captured))
+                    else: moves.append(Move(from_sq, to_sq, piece, captured=captured))
+            
+            if self.en_passant is not None:
+                ep_mask = 1 << self.en_passant
+                attackers = (((pawns & NOT_A_FILE) << 7) | ((pawns & NOT_H_FILE) << 9))
+                if attackers & ep_mask:
+                    from_sq = _popcount((((ep_mask >> 7) & NOT_H_FILE) | ((ep_mask >> 9) & NOT_A_FILE)) & pawns - 1)
+                    moves.append(Move(from_sq, self.en_passant, 'P', promotion='ep', captured='p'))
+        else: # Black moves
+            pawns, piece, enemy_bb = self.bitboards['p'], 'p', self.get_color_bb('w')
+            pushes = (pawns >> 8) & ~occupied
+            for to_bb in self._split_bb(pushes):
+                to_sq = _popcount(to_bb-1); from_sq = to_sq + 8
+                if to_sq // 8 == 0:
+                    for promo in promotions: moves.append(Move(from_sq, to_sq, piece, promotion=promo))
+                else: moves.append(Move(from_sq, to_sq, piece))
+            
+            double_pushes = (((pawns & 0xFF000000000000) >> 8) & ~occupied) >> 8 & ~occupied
+            for to_bb in self._split_bb(double_pushes):
+                to_sq = _popcount(to_bb-1); moves.append(Move(to_sq + 16, to_sq, piece))
+
+            for cap_bb, shift in [((pawns & NOT_H_FILE) >> 7, -7), ((pawns & NOT_A_FILE) >> 9, -9)]:
+                targets = cap_bb & enemy_bb
+                for to_bb in self._split_bb(targets):
+                    to_sq = _popcount(to_bb-1); from_sq, captured = to_sq - shift, self.get_piece(to_sq)
+                    if to_sq // 8 == 0:
+                        for promo in promotions: moves.append(Move(from_sq, to_sq, piece, promotion=promo, captured=captured))
+                    else: moves.append(Move(from_sq, to_sq, piece, captured=captured))
+
+            if self.en_passant is not None:
+                ep_mask = 1 << self.en_passant
+                attackers = (((pawns & NOT_H_FILE) >> 7) | ((pawns & NOT_A_FILE) >> 9))
+                if attackers & ep_mask:
+                    from_sq = _popcount((((ep_mask << 7) & NOT_A_FILE) | ((ep_mask << 9) & NOT_H_FILE)) & pawns - 1)
+                    moves.append(Move(from_sq, self.en_passant, 'p', promotion='ep', captured='P'))
+        return moves
+
+    def generate_knight_moves(self, color: str) -> list[Move]:
+        moves = []
+        piece = 'N' if color == 'w' else 'n'
+        knights_bb, own_bb = self.bitboards[piece], self.get_color_bb(color)
+        offsets = (17, 15, 10, 6, -6, -10, -15, -17)
+        for from_bb in self._split_bb(knights_bb):
+            from_sq = _popcount(from_bb - 1)
+            for off in offsets:
+                to_sq = from_sq + off
+                if 0 <= to_sq < 64 and abs((from_sq % 8) - (to_sq % 8)) <= 2:
+                    if not ((own_bb >> to_sq) & 1):
+                        captured = self.get_piece(to_sq)
+                        moves.append(Move(from_sq, to_sq, piece, captured=captured if captured != '.' else None))
+        return moves
+
+    def generate_king_moves(self, color: str) -> list[Move]:
+        moves = []
+        piece = 'K' if color == 'w' else 'k'
+        king_bb, own_bb = self.bitboards[piece], self.get_color_bb(color)
+        if not king_bb: return []
+        
+        from_sq = _popcount(king_bb - 1)
+        dirs = (1, -1, 8, -8, 9, -9, 7, -7)
+        for d in dirs:
+            to_sq = from_sq + d
+            if 0 <= to_sq < 64 and abs((from_sq % 8) - (to_sq % 8)) <= 1:
+                if not ((own_bb >> to_sq) & 1):
+                    captured = self.get_piece(to_sq)
+                    moves.append(Move(from_sq, to_sq, piece, captured=captured if captured != '.' else None))
+        return moves
+
+    def sliding_moves(self, piece_bb: int, piece_char: str, dirs: tuple[int, ...], own: int, enemy: int) -> list[Move]:
+        moves = []
+        for from_bb in self._split_bb(piece_bb):
+            from_sq = _popcount(from_bb - 1)
+            for step in dirs:
+                current_sq = from_sq
+                while True:
+                    next_sq = current_sq + step
+                    if not (0 <= next_sq < 64): break
+                    if abs((next_sq % 8) - (current_sq % 8)) > 1 and step not in (8, -8): break # Universal wrap check
+                    
+                    if (own >> next_sq) & 1: break
+                    
+                    captured = self.get_piece(next_sq)
+                    moves.append(Move(from_sq, next_sq, piece_char, captured=captured if captured != '.' else None))
+                    
+                    if (enemy >> next_sq) & 1: break
+                    current_sq = next_sq
+        return moves
+
+    def generate_bishop_moves(self, color: str) -> list[Move]:
+        piece = 'B' if color == 'w' else 'b'
+        return self.sliding_moves(self.bitboards[piece], piece, (7, -7, 9, -9), self.get_color_bb(color), self.get_color_bb('b' if color == 'w' else 'w'))
+
+    def generate_rook_moves(self, color: str) -> list[Move]:
+        piece = 'R' if color == 'w' else 'r'
+        return self.sliding_moves(self.bitboards[piece], piece, (1, -1, 8, -8), self.get_color_bb(color), self.get_color_bb('b' if color == 'w' else 'w'))
+
+    def generate_queen_moves(self, color: str) -> list[Move]:
+        piece = 'Q' if color == 'w' else 'q'
+        return self.sliding_moves(self.bitboards[piece], piece, (1, -1, 8, -8, 7, -7, 9, -9), self.get_color_bb(color), self.get_color_bb('b' if color == 'w' else 'w'))
+
+    def compute_initial_zobrist_hash(self):
+        h = 0
+        for piece_char, bb in self.bitboards.items():
+            piece_idx = zobrist.PIECE_MAP[piece_char]
+            for piece_bb in self._split_bb(bb):
+                sq = _popcount(piece_bb - 1)
+                h ^= zobrist.PIECE_KEYS[piece_idx][sq]
+        self.zobrist_hash = h
+        
+    def _update_hash_on_make(self, move: Move):
+        h = self.zobrist_hash
+        p_char, from_sq, to_sq = move.piece, move.from_sq, move.to_sq
+        p_idx = zobrist.PIECE_MAP[p_char]
+        h ^= zobrist.PIECE_KEYS[p_idx][from_sq]
+        if move.promotion == 'ep':
+            cap_char = 'p' if p_char == 'P' else 'P'
+            cap_sq = to_sq + (8 if p_char == 'P' else -8)
+            h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[cap_char]][cap_sq]
+            h ^= zobrist.PIECE_KEYS[p_idx][to_sq]
+        elif move.promotion:
+            if move.captured: h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[move.captured]][to_sq]
+            h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[move.promotion]][to_sq]
+        else:
+            if move.captured: h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[move.captured]][to_sq]
+            h ^= zobrist.PIECE_KEYS[p_idx][to_sq]
+        if move.prev_en_passant is not None: h ^= zobrist.EN_PASSANT_KEYS[move.prev_en_passant % 8]
+        if self.en_passant is not None: h ^= zobrist.EN_PASSANT_KEYS[self.en_passant % 8]
+        self.zobrist_hash = h
+
+    def _update_hash_on_undo(self, move: Move):
+        # Temporarily flip side_to_move to correctly XOR the turn key out
+        self.zobrist_hash ^= zobrist.BLACK_TO_MOVE_KEY
+        h = self.zobrist_hash
+        p_char, from_sq, to_sq = move.piece, move.from_sq, move.to_sq
+        p_idx = zobrist.PIECE_MAP[p_char]
+        if self.en_passant is not None: h ^= zobrist.EN_PASSANT_KEYS[self.en_passant % 8]
+        if move.prev_en_passant is not None: h ^= zobrist.EN_PASSANT_KEYS[move.prev_en_passant % 8]
+        if move.promotion == 'ep':
+            cap_char = 'p' if p_char == 'P' else 'P'
+            cap_sq = to_sq + (8 if p_char == 'P' else -8)
+            h ^= zobrist.PIECE_KEYS[p_idx][to_sq]
+            h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[cap_char]][cap_sq]
+            h ^= zobrist.PIECE_KEYS[p_idx][from_sq]
+        elif move.promotion:
+            h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[move.promotion]][to_sq]
+            if move.captured: h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[move.captured]][to_sq]
+            h ^= zobrist.PIECE_KEYS[p_idx][from_sq]
+        else:
+            h ^= zobrist.PIECE_KEYS[p_idx][to_sq]
+            if move.captured: h ^= zobrist.PIECE_KEYS[zobrist.PIECE_MAP[move.captured]][to_sq]
+            h ^= zobrist.PIECE_KEYS[p_idx][from_sq]
+        self.zobrist_hash = h
+===== engine\book.py =====
+
+===== engine\eval.py =====
+# engine/eval.py
+
+# Use int.bit_count if available (Python 3.10+), otherwise a fallback.
+_popcount = getattr(int, 'bit_count', lambda x: bin(x).count('1'))
+
+# Standard piece values. The king is given a very high value to ensure
+# the AI never considers a move that would lead to its capture.
+PIECE_VALUES = {
+    'P': 100,  'N': 320,  'B': 330,  'R': 500,  'Q': 900,  'K': 20000,
+    'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': -20000
+}
+
+def evaluate(board) -> int:
+    """
+    Calculates the material balance of the board from white's perspective.
+    A positive score favors white, a negative score favors black.
+    """
+    score = 0
+    # Iterate through each piece's bitboard for maximum efficiency,
+    # multiplying the piece value by the number of pieces found.
+    for piece, bb in board.bitboards.items():
+        score += PIECE_VALUES[piece] * _popcount(bb)
+    
+    # Add a bonus for the side to move, which encourages activity.
+    score += 10 if board.side_to_move == 'w' else -10
+    
+    return score
+===== engine\move.py =====
+# engine/move.py
+"""
+Defines the Move data structure for the chess engine.
+
+This module contains a single dataclass, Move, which is used throughout the
+engine to represent a single chess move. It holds all necessary information
+to make, undo, and describe a move.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class Move:
+    """
+    Represents a single move in a chess game.
+
+    Using a dataclass automatically generates essential methods like __init__,
+    __repr__, and __eq__, making the code cleaner and less error-prone.
+
+    Attributes:
+        from_sq (int): The starting square index (0-63).
+        to_sq (int): The destination square index (0-63).
+        piece (str): The piece being moved (e.g., 'P', 'n').
+        promotion (Optional[str]): The piece to promote to (e.g., 'Q'), if any.
+                                   Also used as a sentinel 'ep' for en passant.
+        captured (Optional[str]): The piece being captured, if any.
+        prev_en_passant (Optional[int]): The en passant square *before* this
+                                          move was made. This is critical for
+                                          correctly undoing moves.
+    """
+    from_sq: int
+    to_sq: int
+    piece: str
+    promotion: Optional[str] = None
+    captured: Optional[str] = None
+    prev_en_passant: Optional[int] = None
+
+    def __str__(self) -> str:
+        """Provides a simple, human-readable string representation for debugging."""
+        # This custom __str__ provides a cleaner output than the default dataclass __repr__.
+        promo_str = f"={self.promotion}" if self.promotion and self.promotion != 'ep' else ""
+        capture_str = f"x{self.captured}" if self.captured else ""
+        return f"Move({self.piece}{_square_to_coord(self.from_sq)}{capture_str}{_square_to_coord(self.to_sq)}{promo_str})"
+
+# --- Helper function for pretty printing ---
+
+def _square_to_coord(square: int) -> str:
+    """Converts a square index (0-63) to algebraic notation (e.g., 'a1', 'h8')."""
+    file = "abcdefgh"[square % 8]
+    rank = "12345678"[square // 8]
+    return f"{file}{rank}"
+===== engine\nn_eval.py =====
+# nn_eval.py
+import torch
+import torch.nn as nn
+from engine.board import Board # Assuming 'engine' is in the python path
+
+# Use int.bit_count for performance
+_popcount = getattr(int, 'bit_count', lambda x: bin(x).count('1'))
+
+# A mapping from piece characters to their corresponding "plane" in the input tensor.
+PIECE_TO_PLANE = {
+    'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
+    'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11
+}
+INPUT_FEATURES = (12 * 64) + 1 # 768 for pieces + 1 for side to move
+
+class NN_Evaluator(nn.Module):
+    """
+    A simple feed-forward neural network for evaluating a chess position.
+    The evaluation is from the perspective of the side to move.
+    """
+    def __init__(self, input_size: int = INPUT_FEATURES, hidden_size: int = 256):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1),
+            nn.Tanh() # Tanh squashes the output to a range of [-1, 1]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+def evaluate_with_nn(board: Board, model: NN_Evaluator) -> float:
+    """
+    Takes a board state and a model, and returns a scalar evaluation.
+    Uses torch.no_grad() for fast inference.
+    """
+    # Convert the board to a tensor and add a batch dimension (required by PyTorch models)
+    input_tensor = board_to_tensor(board).unsqueeze(0)
+    
+    with torch.no_grad():
+        # The output is scaled to be in centipawns, similar to traditional engines
+        # A value of 1.0 from Tanh might correspond to ~500 centipawns (a rook's value)
+        return model(input_tensor).item() * 500
+
+def board_to_tensor(board: Board) -> torch.Tensor:
+    """
+    Converts a Board object into a 1D tensor for the neural network.
+    
+    The tensor has INPUT_FEATURES (769) elements, structured as follows:
+    - 768 features: 12 planes of 64 squares each, one for each piece type.
+                    A '1' indicates the presence of that piece on that square.
+    - 1 feature:   The side to move (1.0 for white, 0.0 for black).
+    """
+    # Start with a zeroed tensor
+    tensor = torch.zeros(INPUT_FEATURES, dtype=torch.float32)
+
+    # Populate piece planes
+    for piece, plane_idx in PIECE_TO_PLANE.items():
+        bb = board.bitboards[piece]
+        offset = plane_idx * 64
+        
+        # Efficiently iterate through the set bits of the bitboard
+        while bb > 0:
+            sq = _popcount(bb & -bb) - 1
+            tensor[offset + sq] = 1.0
+            bb &= bb - 1 # Clear the least significant bit
+
+    # Populate side to move
+    if board.side_to_move == 'w':
+        tensor[768] = 1.0
+    
+    return tensor
+===== engine\search.py =====
+# engine/search.py
+from engine.eval import evaluate
+from dataclasses import dataclass
+
+# Constants for TT entry flags
+TT_EXACT = 0
+TT_LOWERBOUND = 1
+TT_UPPERBOUND = 2
+
+@dataclass
+class TT_Entry:
+    """Stores data for a single entry in the Transposition Table."""
+    depth: int
+    score: int
+    flag: int
+    best_move: object = None # Can be a Move object
+
+class TranspositionTable:
+    """A simple dictionary-based transposition table."""
+    def __init__(self):
+        self.table = {}
+
+    def get(self, zobrist_hash: int):
+        return self.table.get(zobrist_hash)
+
+    def put(self, zobrist_hash: int, depth: int, score: int, flag: int, best_move=None):
+        self.table[zobrist_hash] = TT_Entry(depth, score, flag, best_move)
+
+# --- AI Search ---
+
+# Global TT instance
+tt = TranspositionTable()
+
+def find_best_move(board, depth: int):
+    """Public entry point to find the best move for the current position."""
+    is_white_turn = board.side_to_move == 'w'
+    negamax(board, depth, -float('inf'), float('inf'), is_white_turn)
+    
+    # Retrieve the best move from the TT for the root position
+    root_entry = tt.get(board.zobrist_hash)
+    if root_entry:
+        return root_entry.score, root_entry.best_move
+    return 0, None # Should not happen if search is run
+
+def negamax(board, depth: int, alpha: float, beta: float, is_white_turn: bool):
+    """
+    A negamax search algorithm with alpha-beta pruning and transposition table integration.
+    """
+    alpha_orig = alpha
+    
+    # 1. Transposition Table Lookup
+    tt_entry = tt.get(board.zobrist_hash)
+    if tt_entry and tt_entry.depth >= depth:
+        if tt_entry.flag == TT_EXACT:
+            return tt_entry.score
+        elif tt_entry.flag == TT_LOWERBOUND:
+            alpha = max(alpha, tt_entry.score)
+        elif tt_entry.flag == TT_UPPERBOUND:
+            beta = min(beta, tt_entry.score)
+        
+        if alpha >= beta:
+            return tt_entry.score
+
+    # 2. Base Case
+    if depth == 0:
+        score = evaluate(board)
+        return score if is_white_turn else -score
+
+    # 3. Recursive Search
+    best_move = None
+    max_eval = -float('inf')
+    moves = board.generate_legal_moves(board.side_to_move)
+    
+    if not moves: # Checkmate or stalemate
+        return -20000 if board.is_in_check(board.side_to_move) else 0
+
+    for move in moves:
+        board.make_move(move)
+        eval = -negamax(board, depth - 1, -beta, -alpha, not is_white_turn)
+        board.undo_move()
+        
+        if eval > max_eval:
+            max_eval = eval
+            best_move = move
+        
+        alpha = max(alpha, eval)
+        if alpha >= beta:
+            break # Pruning
+
+    # 4. Transposition Table Store
+    flag = TT_EXACT
+    if max_eval <= alpha_orig:
+        flag = TT_UPPERBOUND
+    elif max_eval >= beta:
+        flag = TT_LOWERBOUND
+        
+    tt.put(board.zobrist_hash, depth, max_eval, flag, best_move)
+    
+    return max_eval
+===== engine\transposition.py =====
+class TranspositionTable:
+    def __init__(self):
+        self.table = {}
+
+    def get(self, zobrist_hash):
+        return self.table.get(zobrist_hash, None)
+
+    def put(self, zobrist_hash, value):
+        self.table[zobrist_hash] = value
+
+===== engine\uci.py =====
+class UCIInterface:
+    def __init__(self, board, search):
+        self.board = board
+        self.search = search
+
+    def loop(self):
+        while True:
+            cmd = input()
+            if cmd == "uci":
+                print("id name GodEngine")
+                print("uciok")
+            elif cmd == "isready":
+                print("readyok")
+            elif cmd.startswith("position"):
+                # TODO: parse position and update board
+                pass
+            elif cmd.startswith("go"):
+                best_move = self.search.search(self.board, depth=5)
+                print(f"bestmove {best_move}")
+            elif cmd == "quit":
+                break
+
+===== engine\zobrist.py =====
+# engine/zobrist.py
+import random
+
+# Initialize the Zobrist key table
+# We need a unique random number for each piece on each square.
+PIECE_KEYS = [[random.getrandbits(64) for _ in range(64)] for _ in range(12)]
+
+# A key to XOR if it's black's turn to move
+BLACK_TO_MOVE_KEY = random.getrandbits(64)
+
+# Keys for each of the four castling rights
+CASTLING_KEYS = [random.getrandbits(64) for _ in range(4)]
+
+# Keys for each possible en passant file (columns a-h)
+EN_PASSANT_KEYS = [random.getrandbits(64) for _ in range(8)]
+
+# Map pieces to their index in the PIECE_KEYS table (0-11)
+PIECE_MAP = {
+    'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
+    'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11
+}
+===== engine\__init__.py =====
+
+===== gui\gui.py =====
+# gui/gui.py
+import pygame
+import os
+
+class GUI:
+    """
+    Manages all visual components and drawing for the chess game.
+    """
+    def __init__(self):
+        self.square_size = 640 // 8
+        self.colors = [(240, 217, 181), (181, 136, 99)]
+        self.images = self._load_images()
+        self.font = pygame.font.SysFont("consolas", 32, bold=True)
+
+    def _load_images(self):
+        """
+        Loads piece images from the assets directory.
+        The dictionary keys created here ('P', 'p', 'N', 'n', etc.) are the
+        exact characters the engine uses, which is crucial for correct drawing.
+        """
+        images = {}
+        # These are the base piece types, used to find the asset files.
+        asset_pieces = ['P', 'N', 'B', 'R', 'Q', 'K']
+
+        for piece in asset_pieces:
+            # The key for white pieces is the uppercase character (e.g., 'P').
+            white_key = piece.upper()
+            # The key for black pieces is the lowercase character (e.g., 'p').
+            black_key = piece.lower()
+
+            # The path always uses the uppercase character, per your file names.
+            white_path = os.path.join("assets", f"w{piece.upper()}.png")
+            black_path = os.path.join("assets", f"b{piece.upper()}.png")
+
+            images[white_key] = pygame.transform.scale(
+                pygame.image.load(white_path).convert_alpha(), 
+                (self.square_size, self.square_size)
+            )
+            images[black_key] = pygame.transform.scale(
+                pygame.image.load(black_path).convert_alpha(), 
+                (self.square_size, self.square_size)
+            )
+            
+        print("Piece images loaded successfully.")
+        return images
+
+    def draw_gamestate(self, screen, board, selected_sq, legal_moves_for_selected):
+        """Draws the entire game state by calling helper methods."""
+        self._draw_board(screen)
+        self._draw_highlights(screen, selected_sq, legal_moves_for_selected)
+        self._draw_pieces(screen, board)
+        self._draw_game_over_text(screen, board)
+
+    def _draw_board(self, screen):
+        """Draws the checkerboard squares."""
+        for r in range(8):
+            for c in range(8):
+                color = self.colors[(r + c) % 2]
+                pygame.draw.rect(screen, color, (c * self.square_size, r * self.square_size, self.square_size, self.square_size))
+
+    def _draw_pieces(self, screen, board):
+        """
+        Draws the pieces on the board. This function now correctly uses
+        the piece character directly as the key to find the image.
+        """
+        for sq in range(64):
+            piece = board.get_piece(sq) # Gets the character, e.g., 'P', 'b', 'k'
+            if piece != '.':
+                # The 'piece' character is the direct key for the self.images dictionary.
+                rank, file = divmod(sq, 8)
+                # The (7 - rank) correctly flips the board vertically for Pygame's coordinate system.
+                screen.blit(self.images[piece], (file * self.square_size, (7 - rank) * self.square_size))
+
+    def _draw_highlights(self, screen, selected_sq, legal_moves):
+        """Draws highlights for the selected piece and its legal moves."""
+        if selected_sq is None:
+            return
+
+        rank, file = divmod(selected_sq, 8)
+        pygame.draw.rect(screen, (255, 255, 0), (file * self.square_size, (7 - rank) * self.square_size, self.square_size, self.square_size), 4)
+
+        s = pygame.Surface((self.square_size, self.square_size), pygame.SRCALPHA)
+        s.fill((0, 150, 0, 90))
+        for to_sq in legal_moves:
+            rank, file = divmod(to_sq, 8)
+            screen.blit(s, (file * self.square_size, (7 - rank) * self.square_size))
+            
+    def _draw_game_over_text(self, screen, board):
+        """Checks for and displays checkmate or stalemate messages."""
+        if not board.generate_legal_moves(board.side_to_move):
+            in_check = board.is_in_check(board.side_to_move)
+            message = "Checkmate!" if in_check else "Stalemate!"
+            
+            text = self.font.render(message, True, (200, 20, 20))
+            text_rect = text.get_rect(center=(screen.get_width() / 2, screen.get_height() / 2))
+            
+            bg_rect = text_rect.inflate(20, 20)
+            pygame.draw.rect(screen, (240, 217, 181), bg_rect)
+            pygame.draw.rect(screen, (0, 0, 0), bg_rect, 2)
+            
+            screen.blit(text, text_rect)
